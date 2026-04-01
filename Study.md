@@ -673,29 +673,179 @@ This is called **negative log-likelihood** of a Gaussian. It tells the network:
 
 The network learns to be honest about when it knows and when it doesn't.
 
-### 5.7 The Complete Part 2 Plan
+### 5.7 Part 2 Results
 
-| Step | What we do | What it proves |
-|------|-----------|----------------|
-| 1 | Implement classical R/S and DFA on the test set | Establishes baselines: how well can traditional methods estimate H from 100-point series? |
-| 2 | Train 2-3 Dense architectures | Shows which design choices (depth, width, dropout) matter |
-| 3 | Plot bias vs H_true | Reveals systematic errors (does it over/underestimate at extremes?) |
-| 4 | Plot MAD vs H_true | Shows total error magnitude across the H range |
-| 5 | Compare NN vs classical methods on same test data | The key result: NN beats classical estimators on short series |
-| 6 | Error analysis (where/why does it fail?) | Demonstrates deeper understanding of the model's limitations |
-| 7 | (Optional) MC Dropout uncertainty | Gives confidence intervals, feeds into smarter trading in Part 5 |
+Here are the actual results from our experiments:
+
+```
+Method                MAE      RMSE     Bias     Params
+─────────────────────────────────────────────────────────
+R/S analysis         0.1407   0.1673   +0.0960   n/a
+DFA                  0.0979   0.1179   +0.0675   n/a
+Dense (small)        0.0807   0.1013   +0.0013   8,577
+Dense (medium)       0.0733   0.0933   -0.0084   70,017
+Dense (large)        0.0699   0.0887   -0.0123   228,225
+```
+
+**Key findings:**
+
+1. **All Dense networks beat both classical methods.** Even the smallest Dense network (8.6K params) has lower MAE than DFA (0.0807 vs 0.0979). The improvement over R/S is even larger (almost 2x).
+
+2. **Classical methods have strong positive bias.** R/S overestimates H by +0.096 on average, DFA by +0.068. This means they systematically think series are more trending than they actually are. Dense networks have near-zero bias.
+
+3. **Bigger networks help, but with diminishing returns.** Going from small (8.6K params) to large (228K params) — a 26x increase in parameters — only reduces MAE from 0.0807 to 0.0699. The medium model is the best trade-off.
+
+4. **MC Dropout uncertainty is calibrated.** Correlation between predicted uncertainty and actual error is 0.611 — the network knows when it's unsure. Higher uncertainty at extreme H values (near 0 and 1), which makes sense since those are hardest to estimate from short series.
+
+5. **Dense networks show slight regression to the mean.** They slightly overestimate low H and underestimate high H. The larger the model, the more this effect (bias of -0.012 for large vs +0.001 for small). This is visible in the bias plots.
+
+![Comparison summary](plots/dense/comparison_summary.png)
+
+![Bias and MAD comparison](plots/dense/comparison_bias_mad.png)
+
+![MC Dropout uncertainty](plots/dense/medium_uncertainty.png)
 
 ---
 
 ## 6. Part 3: CNN
 
-*To be completed after Part 3 implementation.*
+### 6.1 What is a CNN (Convolutional Neural Network)?
+
+A CNN is a neural network that uses **filters** (also called kernels) that slide across the input to detect local patterns. While a Dense network sees all 100 numbers at once, a CNN looks at **small windows** of consecutive numbers.
+
+Think of it like reading a sentence with a magnifying glass that shows 5 words at a time, vs reading the whole page at once. The magnifying glass approach lets you focus on **local structure** — which is exactly what autocorrelation is (the relationship between nearby increments).
+
+```
+Input:  [0.2, -0.1, 0.3, -0.2, 0.1, 0.4, -0.3, ...]
+         ─────────────
+         Filter sees these 5 numbers, produces 1 output
+              ─────────────
+              Slides right, sees next 5, produces another output
+                   ─────────────
+                   And so on...
+```
+
+A **filter** (kernel) is a small set of weights, e.g., `[w1, w2, w3, w4, w5]`. It computes a weighted sum at each position:
+
+```
+output[0] = w1×input[0] + w2×input[1] + w3×input[2] + w4×input[3] + w5×input[4]
+output[1] = w1×input[1] + w2×input[2] + w3×input[3] + w4×input[4] + w5×input[5]
+...
+```
+
+The network learns **what weights** to use. Different filters learn to detect different patterns (e.g., one filter might detect "sign changes" = mean-reversion, another might detect "same-sign runs" = trending).
+
+### 6.2 Key CNN Concepts
+
+**Kernel size**: How many consecutive numbers the filter looks at. Kernel size 5 means the filter sees 5 consecutive increments. Larger kernels capture longer-range patterns but need more data.
+
+**Channels (filters)**: How many different patterns each layer detects. "32 channels" means 32 different filters, each learning a different pattern. Think of it as 32 different magnifying glasses, each looking for something different.
+
+**Stride**: How far the filter moves at each step. Stride 1 = move 1 position (overlap a lot). Stride 2 = skip every other position (halves the output length).
+
+**Padding**: Adding zeros at the edges so the output has the same length as the input. Without padding, each convolution shrinks the output.
+
+**Pooling**: Reduces the output size by summarizing local regions. **MaxPool** takes the maximum value in each window. **AvgPool** takes the average. This reduces computation and creates some invariance to small shifts.
+
+**1D vs 2D convolution**: Our data is a 1D time series (one sequence of numbers), so we use **Conv1d**. Images use Conv2d (scan in two dimensions). The concept is identical, just one dimension fewer.
+
+**How to count parameters in a Conv layer**:
+
+```
+Conv1d(in_channels=1, out_channels=32, kernel_size=5):
+  Parameters = 32 filters × (5 weights × 1 input channel + 1 bias) = 192
+```
+
+Much fewer than a Dense layer! That's a key advantage — CNNs are **parameter efficient** because the same filter weights are reused at every position.
+
+### 6.3 Why CNN for Hurst Estimation?
+
+The Hurst exponent is fundamentally about **local correlations** between nearby increments. A CNN is perfectly suited for this because:
+
+1. **Local patterns**: The autocorrelation structure (positive for trending, negative for mean-reverting) is a local pattern — exactly what convolutions detect
+2. **Translation invariance**: The same pattern of correlation exists throughout the series, not just at specific positions. CNNs naturally share weights across positions
+3. **Hierarchical features**: Stacking conv layers lets the network detect patterns at multiple scales — short-range correlations in early layers, longer-range patterns in deeper layers
+4. **Fewer parameters**: CNN weights are shared across positions, so the model is more compact than a Dense network, reducing overfitting risk
+
+### 6.4 The Stone (2020) Architecture
+
+The TP asks us to replicate the CNN from Stone, H. (2020) "Calibrating rough volatility models: a convolutional neural network approach" in Quantitative Finance. The architecture is:
+
+```
+Input (1, 100) — 1 channel, 100 time steps
+    ↓
+Conv1d(1→32, kernel=5) + ReLU + MaxPool(2)      → shape: (32, 48)
+    ↓
+Conv1d(32→64, kernel=5) + ReLU + MaxPool(2)     → shape: (64, 22)
+    ↓
+Conv1d(64→128, kernel=3) + ReLU + MaxPool(2)    → shape: (128, 10)
+    ↓
+Flatten                                          → shape: (1280,)
+    ↓
+Dense(1280→128) + ReLU + Dropout
+    ↓
+Dense(128→1)                                     → output: H_predicted
+```
+
+The idea: convolutions extract local features at increasing scales, then dense layers combine them into a global H estimate.
+
+### 6.5 CNN vs Dense: What's Different?
+
+| Aspect | Dense | CNN |
+|--------|-------|-----|
+| **What it sees** | All 100 numbers at once | Small windows of consecutive numbers |
+| **Parameters** | Many (every input connected to every neuron) | Few (same filter reused at all positions) |
+| **Inductive bias** | None — treats input as unordered | Locality — assumes nearby values are related |
+| **Good at** | Capturing global relationships | Detecting local patterns and textures |
+
+For Hurst estimation, the CNN should have an advantage because the signal (autocorrelation) is inherently local. The Dense network has to learn "look at nearby values" from scratch, while the CNN has this built in.
 
 ---
 
 ## 7. Part 4: Ensemble (Dense + CNN)
 
-*To be completed after Part 4 implementation.*
+### 7.1 What is an Ensemble?
+
+An ensemble combines multiple models to get better predictions than any single model alone. The idea: different models make **different mistakes**. If we combine their predictions wisely, the errors partially cancel out.
+
+Think of it like asking 3 different experts for their opinion on the same question. Each expert has different strengths and blind spots. Averaging (or intelligently combining) their answers is usually better than listening to just one.
+
+### 7.2 Stacking (What We Do)
+
+There are different ensemble strategies:
+- **Simple averaging**: Just average the Dense and CNN predictions. Works but doesn't learn which model to trust more in different situations.
+- **Weighted averaging**: Learn fixed weights (e.g., 60% CNN + 40% Dense). Better but still global.
+- **Stacking** (what the TP asks for): Train a **new network** that takes the Dense and CNN predictions as inputs and learns to combine them.
+
+```
+Time series → Dense network → H_dense = 0.65  ─┐
+                                                 ├→ Meta-learner → H_final = 0.63
+Time series → CNN network   → H_cnn   = 0.61  ─┘
+```
+
+The meta-learner can learn things like:
+- "When the Dense says 0.9 but the CNN says 0.7, trust the CNN more" (because Dense overestimates at high H)
+- "When both agree, be confident. When they disagree, hedge toward 0.5"
+
+### 7.3 Why Stacking Works
+
+Dense and CNN architectures have **different inductive biases**:
+- Dense sees all values globally → good at detecting overall variance patterns
+- CNN scans locally → good at detecting autocorrelation structure
+
+They make **different types of errors** on different parts of the H range. The meta-learner learns to exploit this complementarity.
+
+In our case, the meta-learner's input is just 2 numbers (H_dense, H_cnn), so it's a very small network (e.g., one hidden layer with 16 neurons). This prevents the ensemble from overfitting — it's learning a simple correction function, not a whole new model.
+
+### 7.4 How to Improve the Ensemble Further
+
+The TP asks: "How to improve further the resulting network to be even less biased?"
+
+Several approaches:
+1. **Add more base models**: Include models with different architectures (LSTM, Transformer) or the same architecture trained with different hyperparameters. More diverse opinions = better ensemble
+2. **Feature augmentation**: Pass not just the two predictions but also their **uncertainty estimates** (from MC Dropout) to the meta-learner. This lets it weight models by their confidence
+3. **Residual learning**: Instead of predicting H directly, have the meta-learner predict the **correction** to the best single model. This focuses its capacity on fixing errors
+4. **Bias correction**: Add the true H values' statistics (mean, percentile) as additional features, or use a calibration function post-hoc to remove systematic bias
 
 ---
 
