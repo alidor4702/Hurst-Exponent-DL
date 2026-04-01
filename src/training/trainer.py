@@ -32,7 +32,7 @@ class HurstTrainer:
 
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="min", factor=0.5, patience=5, verbose=False
+            self.optimizer, mode="min", factor=0.5, patience=5
         )
         self.criterion = nn.MSELoss()
 
