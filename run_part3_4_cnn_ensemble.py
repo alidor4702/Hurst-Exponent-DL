@@ -61,16 +61,18 @@ def train_cnn(X_train, y_train, X_val, y_val, X_test, y_test, device, cfg):
     print(f"CNN (Stone 2020) — {n_params:,} parameters")
     print(f"{'=' * 60}")
 
+    # Stone (2020) uses batch_size=64 and epochs=30
+    # We use more epochs with early stopping for flexibility
     trainer = HurstTrainer(
         model=model,
         device=device,
         lr=cfg["training"]["learning_rate"],
-        batch_size=cfg["training"]["batch_size"],
-        patience=cfg["training"]["patience"],
+        batch_size=64,  # paper uses 64
+        patience=20,
         model_name="cnn_stone",
     )
 
-    history = trainer.train(X_train, y_train, X_val, y_val, epochs=cfg["training"]["epochs"])
+    history = trainer.train(X_train, y_train, X_val, y_val, epochs=150)
     preds = trainer.predict(X_test)
     mean_pred, std_pred = trainer.predict_with_uncertainty(X_test, n_samples=30)
 
